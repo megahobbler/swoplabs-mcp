@@ -465,7 +465,6 @@ async function main() {
   if (useHttp) {
     const app = express();
     app.use(cors());
-    app.use(express.json());
 
     const transports: Record<string, SSEServerTransport> = {};
 

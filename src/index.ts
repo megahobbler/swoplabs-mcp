@@ -3,6 +3,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { randomUUID } from "node:crypto";
 import express from "express";
 import cors from "cors";
 import { z } from "zod";
@@ -466,21 +468,77 @@ async function main() {
     const app = express();
     app.use(cors());
 
-    const transports: Record<string, SSEServerTransport> = {};
+    // ── Streamable HTTP transport on /mcp (what Smithery uses) ──────────────
+    const mcpTransports = new Map<string, StreamableHTTPServerTransport>();
+
+    app.all("/mcp", async (req, res) => {
+      // Handle GET for SSE stream, POST for messages, DELETE for session cleanup
+      const sessionId = req.headers["mcp-session-id"] as string | undefined;
+
+      if (req.method === "GET" || req.method === "DELETE") {
+        // For GET (SSE stream) and DELETE, we need an existing session
+        if (sessionId && mcpTransports.has(sessionId)) {
+          const transport = mcpTransports.get(sessionId)!;
+          await transport.handleRequest(req, res);
+          return;
+        }
+        if (req.method === "DELETE") {
+          res.status(404).end();
+          return;
+        }
+        // GET without session - not valid for streamable HTTP
+        res.status(400).json({ error: "Missing mcp-session-id header" });
+        return;
+      }
+
+      // POST - could be initialization or ongoing messages
+      if (sessionId && mcpTransports.has(sessionId)) {
+        // Existing session
+        const transport = mcpTransports.get(sessionId)!;
+        await transport.handleRequest(req, res);
+        return;
+      }
+
+      // New session (initialization)
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+      });
+      const sessionServer = createServer();
+
+      transport.onclose = () => {
+        if (transport.sessionId) {
+          mcpTransports.delete(transport.sessionId);
+        }
+      };
+
+      await sessionServer.connect(transport);
+
+      if (transport.sessionId) {
+        mcpTransports.set(transport.sessionId, transport);
+      }
+
+      await transport.handleRequest(req, res);
+    });
+
+    // ── Legacy SSE transport on /sse (backward compat) ─────────────────────
+    const sseTransports: Record<string, SSEServerTransport> = {};
 
     app.get("/sse", async (req, res) => {
       const sessionServer = createServer();
-      const transport = new SSEServerTransport("/messages", res);
-      transports[transport.sessionId] = transport;
+      const protocol = req.headers["x-forwarded-proto"] || req.protocol || "https";
+      const host = req.headers["x-forwarded-host"] || req.headers.host || req.hostname;
+      const messagesUrl = `${protocol}://${host}/messages`;
+      const transport = new SSEServerTransport(messagesUrl, res);
+      sseTransports[transport.sessionId] = transport;
       res.on("close", () => {
-        delete transports[transport.sessionId];
+        delete sseTransports[transport.sessionId];
       });
       await sessionServer.connect(transport);
     });
 
     app.post("/messages", async (req, res) => {
       const sessionId = req.query.sessionId as string;
-      const transport = transports[sessionId];
+      const transport = sseTransports[sessionId];
       if (!transport) {
         res.status(400).json({ error: "Invalid session ID" });
         return;
@@ -488,6 +546,7 @@ async function main() {
       await transport.handlePostMessage(req, res);
     });
 
+    // ── Health & metadata ──────────────────────────────────────────────────
     app.get("/health", (_req, res) => {
       res.json({ status: "ok", server: "swoplabs-mcp", version: "1.0.0" });
     });
@@ -516,7 +575,8 @@ async function main() {
     const port = parseInt(process.env.PORT || "3001", 10);
     app.listen(port, "0.0.0.0", () => {
       console.log(`Swop Labs MCP server running on http://0.0.0.0:${port}`);
-      console.log(`SSE endpoint: http://0.0.0.0:${port}/sse`);
+      console.log(`Streamable HTTP: http://0.0.0.0:${port}/mcp`);
+      console.log(`Legacy SSE: http://0.0.0.0:${port}/sse`);
     });
   } else {
     const server = createServer();

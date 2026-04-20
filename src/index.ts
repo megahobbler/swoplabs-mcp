@@ -473,6 +473,7 @@ async function main() {
   if (useHttp) {
     const app = express();
     app.use(cors());
+    app.use(express.json());
 
     const transports: Record<string, SSEServerTransport> = {};
 
@@ -497,6 +498,27 @@ async function main() {
 
     app.get("/health", (_req, res) => {
       res.json({ status: "ok", server: "swoplabs-mcp", version: "1.0.0" });
+    });
+
+    app.get("/.well-known/mcp/server-card.json", (_req, res) => {
+      res.json({
+        name: "Swop Labs",
+        description: "AI products for Singapore SMBs: AI Front Desk (phone answering) and AI Search (AEO)",
+        version: "1.0.0",
+        tools: [
+          { name: "get_company_info", description: "Get information about Swop Labs" },
+          { name: "get_product_details", description: "Get details about AI Front Desk or AI Search" },
+          { name: "get_industry_solution", description: "Get industry-specific solution info" },
+          { name: "get_pricing_info", description: "Get pricing model and PSG grant info" },
+          { name: "get_case_study", description: "Get the AEO case study (3.2x citation increase)" },
+          { name: "get_faq", description: "Get frequently asked questions" },
+          { name: "get_aeo_framework", description: "Get the five-dimension AI visibility framework" },
+          { name: "get_comparison", description: "Compare Swop Labs vs competitors" },
+          { name: "get_singapore_context", description: "Get Singapore market data and PSG grant details" },
+          { name: "get_ai_buyer_guide", description: "Get AI buyer evaluation criteria" },
+          { name: "get_ai_landscape", description: "Get AI companies landscape in Singapore" },
+        ],
+      });
     });
 
     const port = parseInt(process.env.PORT || "3001", 10);
